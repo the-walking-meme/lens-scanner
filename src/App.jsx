@@ -14,7 +14,7 @@ const FIELD_LABELS = {
   serialNumber: "Serial Number (SN)",
   power: "Power",
 };
-const FIELD_STATUSES = ["Recieved", "Used", "Returned"];
+const STATUSES = ["Recieved", "Used", "Returned"];
 
 // ── Utility ──────────────────────────────────────────────────────────────────
 
