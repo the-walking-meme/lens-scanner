@@ -120,7 +120,7 @@ async function authorizeAndAppend(rowData, lensStatus) {
         const spreadsheetId = GOOGLE_SHEETS_CONFIG.SPREADSHEET_ID;
         const sheetName = GOOGLE_SHEETS_CONFIG.SHEET_NAME;
         const existingRow = await findExistingRow(spreadsheetId, sheetName, rowData.serialNumber);
-        const statusColMap = { Received: "E", Used: "F", Returned: "G" };
+        const statusColMap = { "Received": "E", "Used": "F", "Returned": "G" };
         const statusCol = statusColMap[lensStatus];
 
         if (existingRow) {
@@ -148,7 +148,7 @@ async function authorizeAndAppend(rowData, lensStatus) {
             range: `${sheetName}!A1`,
             valueInputOption: "USER_ENTERED",
             resource: {
-              values: [[rowData.brand, rowData.lensType, rowData.serialNumber, rowData.power, receivedTs, usedTs, returnedTs]],
+              values: [[rowData.brand, rowData.lensType, rowData.serialNumber, "'" + rowData.power, receivedTs, usedTs, returnedTs]],
             },
           });
         }
