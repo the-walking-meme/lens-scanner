@@ -122,6 +122,8 @@ async function authorizeAndAppend(rowData, lensStatus) {
         const existingRow = await findExistingRow(spreadsheetId, sheetName, rowData.serialNumber);
         const statusColMap = { "Received": "E", "Used": "F", "Returned": "G" };
         const statusCol = statusColMap[lensStatus];
+        console.log("lensStatus:", lensStatus);
+        console.log("statusCol:", statusCol);
 
         if (existingRow) {
           const rowResponse = await window.gapi.client.sheets.spreadsheets.values.get({
@@ -143,6 +145,7 @@ async function authorizeAndAppend(rowData, lensStatus) {
           const receivedTs = lensStatus === "Received" ? timestamp : "";
           const usedTs = lensStatus === "Used" ? timestamp : "";
           const returnedTs = lensStatus === "Returned" ? timestamp : "";
+          console.log("receivedTs:", receivedTs, "usedTs:", usedTs, "returnedTs:", returnedTs);
           await window.gapi.client.sheets.spreadsheets.values.append({
             spreadsheetId,
             range: `${sheetName}!A1`,
