@@ -1,11 +1,10 @@
 import { useState, useRef, useCallback } from "react";
 
 const GOOGLE_SHEETS_CONFIG = {
-  // REPLACE THESE WITH YOUR VALUES (see setup guide)
-  SPREADSHEET_ID: "YOUR_SPREADSHEET_ID",
-  API_KEY: "YOUR_GOOGLE_API_KEY",
-  CLIENT_ID: "YOUR_GOOGLE_CLIENT_ID",
-  SHEET_NAME: "Lens Log",
+  SPREADSHEET_ID: import.meta.env.VITE_SPREADSHEET_ID,
+  API_KEY: import.meta.env.VITE_API_KEY,
+  CLIENT_ID: import.meta.env.VITE_CLIENT_ID,
+  SHEET_NAME: new Date().toLocaleString('default', { month: 'long', year: 'numeric' }),
 };
 
 const FIELDS = ["brand", "lensType", "serialNumber", "power"];
@@ -70,6 +69,32 @@ async function loadGis() {
   });
 }
 
+async function ensureSheetExists(spreadsheetId, sheetName) {
+  const response = await window.gapi.client.sheets.spreadsheets.get({ spreadsheetId });
+  const sheets = response.result.sheets.map(s => s.properties.title);
+  if (!sheets.includes(sheetName)) {
+    await window.gapi.client.sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      resource: {
+        requests: [{
+          addSheet: {
+            properties: {
+              title: sheetName
+            }
+          }
+        }]
+      }
+    });
+    // Add headers to new sheet
+    await window.gapi.client.sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${sheetName}!A1`,
+      valueInputOption: "USER_ENTERED",
+      resource: { values: [["Timestamp", "Brand", "Lens Type", "Serial Number", "Power"]] }
+    });
+  }
+}
+
 async function authorizeAndAppend(rowData) {
   await loadGapi();
   await loadGis();
@@ -79,6 +104,7 @@ async function authorizeAndAppend(rowData) {
       try {
         const timestamp = new Date().toLocaleString();
         const values = [[timestamp, rowData.brand, rowData.lensType, rowData.serialNumber, rowData.power]];
+        await ensureSheetExists(GOOGLE_SHEETS_CONFIG.SPREADSHEET_ID, GOOGLE_SHEETS_CONFIG.SHEET_NAME);
         await window.gapi.client.sheets.spreadsheets.values.append({
           spreadsheetId: GOOGLE_SHEETS_CONFIG.SPREADSHEET_ID,
           range: `${GOOGLE_SHEETS_CONFIG.SHEET_NAME}!A1`,
@@ -466,16 +492,6 @@ export default function LensScanner() {
                 </div>
               </div>
             ))}
-          </div>
-        )}
-
-        {/* Setup hint */}
-        {status === "idle" && !preview && (
-          <div style={{ marginTop: 32, padding: 16, background: "#0d2030", borderRadius: 12, border: "1px solid #1a3a4a" }}>
-            <div style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#2a5a6a", letterSpacing: "0.08em", marginBottom: 8 }}>⚙ CONFIGURATION NEEDED</div>
-            <div style={{ fontSize: 12, color: "#4a7a8a", lineHeight: 1.6 }}>
-              Update <code style={{ color: "#00c9a7" }}>GOOGLE_SHEETS_CONFIG</code> at the top of this file with your Spreadsheet ID, API Key, and Client ID. See the setup guide for details.
-            </div>
           </div>
         )}
       </div>
