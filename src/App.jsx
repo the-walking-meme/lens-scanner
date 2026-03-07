@@ -14,6 +14,7 @@ const FIELD_LABELS = {
   serialNumber: "Serial Number (SN)",
   power: "Power",
 };
+const FIELD_STATUSES = ["Recieved", "Used", "Returned"];
 
 // ── Utility ──────────────────────────────────────────────────────────────────
 
@@ -90,27 +91,67 @@ async function ensureSheetExists(spreadsheetId, sheetName) {
       spreadsheetId,
       range: `${sheetName}!A1`,
       valueInputOption: "USER_ENTERED",
-      resource: { values: [["Timestamp", "Brand", "Lens Type", "Serial Number", "Power"]] }
+      resource: { values: [["Brand", "Lens Type", "Serial Number", "Power", "Received", "Used", "Returned"]] }
     });
   }
 }
 
-async function authorizeAndAppend(rowData) {
+async function findExistingRow(spreadsheetId, sheetName, serialNumber) {
+  const response = await window.gapi.client.sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${sheetName}!A:G`,
+  });
+  const rows = response.result.values || [];
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][2] === serialNumber) return i + 1;
+  }
+  return null;
+}
+
+async function authorizeAndAppend(rowData, lensStatus) {
   await loadGapi();
   await loadGis();
   return new Promise((resolve, reject) => {
     tokenClient.callback = async (resp) => {
       if (resp.error) { reject(new Error(resp.error)); return; }
       try {
-        const timestamp = new Date().toLocaleString();
-        const values = [[timestamp, rowData.brand, rowData.lensType, rowData.serialNumber, rowData.power]];
         await ensureSheetExists(GOOGLE_SHEETS_CONFIG.SPREADSHEET_ID, GOOGLE_SHEETS_CONFIG.SHEET_NAME);
-        await window.gapi.client.sheets.spreadsheets.values.append({
-          spreadsheetId: GOOGLE_SHEETS_CONFIG.SPREADSHEET_ID,
-          range: `${GOOGLE_SHEETS_CONFIG.SHEET_NAME}!A1`,
-          valueInputOption: "USER_ENTERED",
-          resource: { values },
-        });
+        const timestamp = new Date().toLocaleString();
+        const spreadsheetId = GOOGLE_SHEETS_CONFIG.SPREADSHEET_ID;
+        const sheetName = GOOGLE_SHEETS_CONFIG.SHEET_NAME;
+        const existingRow = await findExistingRow(spreadsheetId, sheetName, rowData.serialNumber);
+        const statusColMap = { Received: "E", Used: "F", Returned: "G" };
+        const statusCol = statusColMap[lensStatus];
+
+        if (existingRow) {
+          const rowResponse = await window.gapi.client.sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: `${sheetName}!${statusCol}${existingRow}`,
+          });
+          const existing = rowResponse.result.values?.[0]?.[0];
+          if (existing) {
+            reject(new Error(`This lens was already marked as ${lensStatus} on ${existing}`));
+            return;
+          }
+          await window.gapi.client.sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `${sheetName}!${statusCol}${existingRow}`,
+            valueInputOption: "USER_ENTERED",
+            resource: { values: [[timestamp]] },
+          });
+        } else {
+          const receivedTs = lensStatus === "Received" ? timestamp : "";
+          const usedTs = lensStatus === "Used" ? timestamp : "";
+          const returnedTs = lensStatus === "Returned" ? timestamp : "";
+          await window.gapi.client.sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: `${sheetName}!A1`,
+            valueInputOption: "USER_ENTERED",
+            resource: {
+              values: [[rowData.brand, rowData.lensType, rowData.serialNumber, rowData.power, receivedTs, usedTs, returnedTs]],
+            },
+          });
+        }
         resolve();
       } catch (e) { reject(e); }
     };
@@ -211,6 +252,7 @@ export default function LensScanner() {
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
   const [imageData, setImageData] = useState(null);
+  const [lensStatus, setLensStatus] = useState("Received");
   const fileRef = useRef();
   const cameraRef = useRef();
 
@@ -242,8 +284,8 @@ export default function LensScanner() {
     setStatus("saving");
     setMessage("Saving to Google Sheets…");
     try {
-      await authorizeAndAppend(fields);
-      setHistory((h) => [{ ...fields, time: new Date().toLocaleTimeString() }, ...h.slice(0, 19)]);
+      await authorizeAndAppend(fields, lensStatus);
+      setHistory((h) => [{ ...fields, lensStatus, time: new Date().toLocaleTimeString() }, ...h.slice(0, 19)]);
       setStatus("idle");
       setMessage("✓ Saved to Google Sheets!");
       setFields({ brand: "", lensType: "", serialNumber: "", power: "" });
@@ -261,6 +303,7 @@ export default function LensScanner() {
     setFields({ brand: "", lensType: "", serialNumber: "", power: "" });
     setMessage("");
     setImageData(null);
+    setLensStatus("Received");
   };
 
   return (
@@ -441,7 +484,30 @@ export default function LensScanner() {
                 </div>
               ))}
             </div>
-
+            {/* Lens Status Selector */}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#4a8a9a", letterSpacing: "0.1em", marginBottom: 10, textTransform: "uppercase" }}>
+                Mark As
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {STATUSES.map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setLensStatus(s)}
+                    style={{
+                      flex: 1, padding: "12px 6px", borderRadius: 10,
+                      border: `1px solid ${lensStatus === s ? s === "Received" ? "#00c9a7" : s === "Used" ? "#ffd740" : "#ff5252" : "#1a4a5a"}`,
+                      background: lensStatus === s ? s === "Received" ? "#003d33" : s === "Used" ? "#3a3000" : "#3a0000" : "transparent",
+                      color: lensStatus === s ? s === "Received" ? "#00c9a7" : s === "Used" ? "#ffd740" : "#ff5252" : "#4a8a9a",
+                      fontSize: 13, fontFamily: "'DM Mono', monospace",
+                      cursor: "pointer", transition: "all 0.2s",
+                    }}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
             <button
               onClick={handleSave}
               disabled={status === "saving"}
@@ -487,8 +553,18 @@ export default function LensScanner() {
                   <span style={{ color: "#00c9a7", fontFamily: "'DM Mono', monospace", fontSize: 12 }}>{entry.serialNumber || "—"}</span>
                   <span style={{ color: "#2a5a6a", fontSize: 11, fontFamily: "'DM Mono', monospace" }}>{entry.time}</span>
                 </div>
-                <div style={{ fontSize: 13, color: "#7ab8c8" }}>
-                  {[entry.brand, entry.lensType, entry.power].filter(Boolean).join(" · ") || "No data"}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 13, color: "#7ab8c8" }}>
+                    {[entry.brand, entry.lensType, entry.power].filter(Boolean).join(" · ") || "No data"}
+                  </span>
+                  <span style={{
+                    fontSize: 11, fontFamily: "'DM Mono', monospace",
+                    color: entry.lensStatus === "Received" ? "#00c9a7" : entry.lensStatus === "Used" ? "#ffd740" : "#ff5252",
+                    border: `1px solid ${entry.lensStatus === "Received" ? "#00c9a740" : entry.lensStatus === "Used" ? "#ffd74040" : "#ff525240"}`,
+                    padding: "2px 8px", borderRadius: 10,
+                  }}>
+                    {entry.lensStatus}
+                  </span>
                 </div>
               </div>
             ))}
