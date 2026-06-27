@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from "react";
+import heic2any from "heic2any";
 
 const GOOGLE_SHEETS_CONFIG = {
   SPREADSHEET_ID: import.meta.env.VITE_SPREADSHEET_ID,
@@ -271,13 +272,23 @@ export default function LensScanner() {
 
   const handleImage = useCallback(async (file) => {
     if (!file) return;
-    const url = URL.createObjectURL(file);
-    setPreview(url);
     setStatus("scanning");
-    setMessage("Scanning label with AI…");
+    setMessage("Processing image…");
     try {
-      const b64 = await fileToBase64(file);
-      const mime = file.type || "image/jpeg";
+      let processedFile = file;
+      const isHeic = file.type === "image/heic" || file.type === "image/heif" || /\.heic$|\.heif$/i.test(file.name);
+      if (isHeic) {
+        setMessage("Converting HEIC image…");
+        const convertedBlob = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 });
+        processedFile = new File([convertedBlob], "converted.jpg", { type: "image/jpeg" });
+      }
+
+      const url = URL.createObjectURL(processedFile);
+      setPreview(url);
+      setMessage("Scanning label with AI…");
+
+      const b64 = await fileToBase64(processedFile);
+      const mime = processedFile.type || "image/jpeg";
       setImageData({ b64, mime });
       const parsed = await parseLabelWithClaude(b64, mime);
       setLensList(parsed);
