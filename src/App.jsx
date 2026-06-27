@@ -189,17 +189,21 @@ async function parseLabelWithClaude(base64Image, mediaType) {
           },
           {
             type: "text",
-            text: `You are a medical device label parser for a retina clinic. Analyze this intraocular lens (IOL) or ophthalmic lens label image.
+            text: `You are a medical device label parser for a retina clinic. Analyze this image, which may contain ONE or MULTIPLE intraocular lens (IOL) or ophthalmic lens labels.
 
-Extract the following fields and respond ONLY with valid JSON (no markdown, no extra text):
-{
-  "brand": "manufacturer/brand name or empty string",
-  "lensType": "lens model/type name or empty string",
-  "serialNumber": "serial number or lot number or empty string",
-  "power": "optical power in diopters (e.g. +21.0 D) or empty string"
-}
+Identify EACH distinct lens label in the image. For each one, extract its fields.
 
-If a field cannot be determined, use an empty string. Be precise with the power value including sign and unit.`,
+Respond ONLY with a valid JSON array (no markdown, no extra text), like this:
+[
+  {
+    "brand": "manufacturer/brand name or empty string",
+    "lensType": "lens model/type name or empty string",
+    "serialNumber": "serial number or lot number or empty string",
+    "power": "optical power in diopters (e.g. +21.0 D) or empty string"
+  }
+]
+
+If there is only one lens, return an array with one object. If a field cannot be determined, use an empty string. Be precise with the power value including sign and unit.`,
           },
         ],
       }],
@@ -214,7 +218,8 @@ If a field cannot be determined, use an empty string. Be precise with the power 
   const data = await response.json();
   const text = data.content.map((b) => b.text || "").join("");
   const clean = text.replace(/```json|```/g, "").trim();
-  return JSON.parse(clean);
+  const parsed = JSON.parse(clean);
+  return Array.isArray(parsed) ? parsed : [parsed];
 }
 
 // ── Components ────────────────────────────────────────────────────────────────
@@ -255,7 +260,7 @@ function StatusBadge({ status }) {
 export default function LensScanner() {
   const [status, setStatus] = useState("idle");
   const [preview, setPreview] = useState(null);
-  const [fields, setFields] = useState({ brand: "", lensType: "", serialNumber: "", power: "" });
+  const [lensList, setLensList] = useState([]);
   const [message, setMessage] = useState("");
   const [history, setHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
@@ -275,9 +280,11 @@ export default function LensScanner() {
       const mime = file.type || "image/jpeg";
       setImageData({ b64, mime });
       const parsed = await parseLabelWithClaude(b64, mime);
-      setFields(parsed);
+      setLensList(parsed);
       setStatus("success");
-      setMessage("Label parsed successfully. Review and save.");
+      setMessage(parsed.length > 1
+        ? `${parsed.length} lenses detected. Review and save.`
+        : "Label parsed successfully. Review and save.");
     } catch (e) {
       setStatus("error");
       setMessage("Could not parse label: " + e.message);
@@ -285,30 +292,40 @@ export default function LensScanner() {
   }, []);
 
   const handleSave = async () => {
-    if (!fields.serialNumber && !fields.lensType) {
-      setMessage("Please fill in at least Lens Type or Serial Number.");
+    const validLenses = lensList.filter(l => l.serialNumber || l.lensType);
+    if (validLenses.length === 0) {
+      setMessage("Please fill in at least Lens Type or Serial Number for one lens.");
       return;
     }
     setStatus("saving");
-    setMessage("Saving to Google Sheets…");
-    try {
-      await authorizeAndAppend(fields, lensStatus);
-      setHistory((h) => [{ ...fields, lensStatus, time: new Date().toLocaleTimeString() }, ...h.slice(0, 19)]);
+    setMessage(`Saving ${validLenses.length} lens(es) to Google Sheets…`);
+    const errors = [];
+    let savedCount = 0;
+    for (const lens of validLenses) {
+      try {
+        await authorizeAndAppend(lens, lensStatus);
+        setHistory((h) => [{ ...lens, lensStatus, time: new Date().toLocaleTimeString() }, ...h.slice(0, 19)]);
+        savedCount++;
+      } catch (e) {
+        errors.push(`${lens.serialNumber || lens.lensType}: ${e.message}`);
+      }
+    }
+    if (errors.length > 0) {
+      setStatus("error");
+      setMessage(`Saved ${savedCount}/${validLenses.length}. Errors: ${errors.join("; ")}`);
+    } else {
       setStatus("idle");
-      setMessage("✓ Saved to Google Sheets!");
-      setFields({ brand: "", lensType: "", serialNumber: "", power: "" });
+      setMessage(`✓ Saved ${savedCount} lens(es) to Google Sheets!`);
+      setLensList([]);
       setPreview(null);
       setImageData(null);
-    } catch (e) {
-      setStatus("error");
-      setMessage("Save failed: " + e.message);
     }
   };
 
   const handleReset = () => {
     setStatus("idle");
     setPreview(null);
-    setFields({ brand: "", lensType: "", serialNumber: "", power: "" });
+    setLensList([]);
     setMessage("");
     setImageData(null);
     setLensStatus("Received");
@@ -455,43 +472,53 @@ export default function LensScanner() {
           </div>
         )}
 
-        {/* Fields form */}
-        {(status === "success" || status === "saving" || (status === "idle" && preview)) && (
+        {/* Lens cards */}
+        {(status === "success" || status === "saving" || (status === "idle" && preview)) && lensList.length > 0 && (
           <div style={{ animation: "fadeIn 0.4s ease" }}>
-            <div style={{
-              background: "linear-gradient(135deg, #0d2535 0%, #0a1e2e 100%)",
-              border: "1px solid #1a4a5a",
-              borderRadius: 20,
-              padding: 20,
-              marginBottom: 16,
-            }}>
-              <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 14, fontWeight: 700, color: "#7ab8c8", marginBottom: 16, letterSpacing: "0.05em" }}>
-                EXTRACTED DATA — REVIEW &amp; EDIT
-              </div>
-              {FIELDS.map(key => (
-                <div key={key} style={{ marginBottom: 16 }}>
-                  <label style={{ display: "block", fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#4a8a9a", letterSpacing: "0.1em", marginBottom: 6, textTransform: "uppercase" }}>
-                    {FIELD_LABELS[key]}
-                  </label>
-                  <input
-                    value={fields[key]}
-                    onChange={e => setFields(f => ({ ...f, [key]: e.target.value }))}
-                    placeholder={`Enter ${FIELD_LABELS[key]}…`}
-                    style={{
-                      width: "100%", boxSizing: "border-box",
-                      background: "#071a28",
-                      border: "1px solid #1a4a5a",
-                      borderRadius: 10,
-                      padding: "12px 14px",
-                      color: fields[key] ? "#fff" : "#2a5a6a",
-                      fontSize: 15,
-                      fontFamily: fields[key] ? "'DM Mono', monospace" : "'DM Sans', sans-serif",
-                      transition: "border-color 0.2s",
-                    }}
-                  />
+            {lensList.map((lens, idx) => (
+              <div key={idx} style={{
+                background: "linear-gradient(135deg, #0d2535 0%, #0a1e2e 100%)",
+                border: "1px solid #1a4a5a",
+                borderRadius: 20,
+                padding: 20,
+                marginBottom: 16,
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                  <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 14, fontWeight: 700, color: "#7ab8c8", letterSpacing: "0.05em" }}>
+                    {lensList.length > 1 ? `LENS ${idx + 1} OF ${lensList.length}` : "EXTRACTED DATA — REVIEW & EDIT"}
+                  </div>
+                  {lensList.length > 1 && (
+                    <button onClick={() => setLensList(l => l.filter((_, i) => i !== idx))} style={{
+                      background: "transparent", border: "1px solid #ff525240", borderRadius: 6,
+                      padding: "2px 8px", color: "#ff5252", fontSize: 11, cursor: "pointer",
+                    }}>✕ Remove</button>
+                  )}
                 </div>
-              ))}
-            </div>
+                {FIELDS.map(key => (
+                  <div key={key} style={{ marginBottom: 16 }}>
+                    <label style={{ display: "block", fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#4a8a9a", letterSpacing: "0.1em", marginBottom: 6, textTransform: "uppercase" }}>
+                      {FIELD_LABELS[key]}
+                    </label>
+                    <input
+                      value={lens[key]}
+                      onChange={e => setLensList(list => list.map((l, i) => i === idx ? { ...l, [key]: e.target.value } : l))}
+                      placeholder={`Enter ${FIELD_LABELS[key]}…`}
+                      style={{
+                        width: "100%", boxSizing: "border-box",
+                        background: "#071a28",
+                        border: "1px solid #1a4a5a",
+                        borderRadius: 10,
+                        padding: "12px 14px",
+                        color: lens[key] ? "#fff" : "#2a5a6a",
+                        fontSize: 15,
+                        fontFamily: lens[key] ? "'DM Mono', monospace" : "'DM Sans', sans-serif",
+                        transition: "border-color 0.2s",
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            ))}
             {/* Lens Status Selector */}
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#4a8a9a", letterSpacing: "0.1em", marginBottom: 10, textTransform: "uppercase" }}>
