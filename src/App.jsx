@@ -109,55 +109,13 @@ async function findExistingRow(spreadsheetId, sheetName, serialNumber) {
   return null;
 }
 
-async function authorizeAndAppend(rowData, lensStatus) {
+async function ensureAuthorized() {
   await loadGapi();
   await loadGis();
   return new Promise((resolve, reject) => {
-    tokenClient.callback = async (resp) => {
+    tokenClient.callback = (resp) => {
       if (resp.error) { reject(new Error(resp.error)); return; }
-      try {
-        await ensureSheetExists(GOOGLE_SHEETS_CONFIG.SPREADSHEET_ID, GOOGLE_SHEETS_CONFIG.SHEET_NAME);
-        const timestamp = new Date().toLocaleString();
-        const spreadsheetId = GOOGLE_SHEETS_CONFIG.SPREADSHEET_ID;
-        const sheetName = GOOGLE_SHEETS_CONFIG.SHEET_NAME;
-        const existingRow = await findExistingRow(spreadsheetId, sheetName, rowData.serialNumber);
-        const statusColMap = { "Received": "E", "Used": "F", "Returned": "G" };
-        const statusCol = statusColMap[lensStatus];
-        console.log("lensStatus:", lensStatus);
-        console.log("statusCol:", statusCol);
-
-        if (existingRow) {
-          const rowResponse = await window.gapi.client.sheets.spreadsheets.values.get({
-            spreadsheetId,
-            range: `${sheetName}!${statusCol}${existingRow}`,
-          });
-          const existing = rowResponse.result.values?.[0]?.[0];
-          if (existing) {
-            reject(new Error(`This lens was already marked as ${lensStatus} on ${existing}`));
-            return;
-          }
-          await window.gapi.client.sheets.spreadsheets.values.update({
-            spreadsheetId,
-            range: `${sheetName}!${statusCol}${existingRow}`,
-            valueInputOption: "USER_ENTERED",
-            resource: { values: [[timestamp]] },
-          });
-        } else {
-          const receivedTs = lensStatus === "Received" ? timestamp : "";
-          const usedTs = lensStatus === "Used" ? timestamp : "";
-          const returnedTs = lensStatus === "Returned" ? timestamp : "";
-          console.log("receivedTs:", receivedTs, "usedTs:", usedTs, "returnedTs:", returnedTs);
-          await window.gapi.client.sheets.spreadsheets.values.append({
-            spreadsheetId,
-            range: `${sheetName}!A1`,
-            valueInputOption: "USER_ENTERED",
-            resource: {
-              values: [[rowData.brand, rowData.lensType, rowData.serialNumber, "'" + rowData.power, receivedTs, usedTs, returnedTs]],
-            },
-          });
-        }
-        resolve();
-      } catch (e) { reject(e); }
+      resolve();
     };
     if (window.gapi.client.getToken() === null) {
       tokenClient.requestAccessToken({ prompt: "consent" });
@@ -165,6 +123,45 @@ async function authorizeAndAppend(rowData, lensStatus) {
       tokenClient.requestAccessToken({ prompt: "" });
     }
   });
+}
+
+async function saveLensRow(rowData, lensStatus) {
+  await ensureSheetExists(GOOGLE_SHEETS_CONFIG.SPREADSHEET_ID, GOOGLE_SHEETS_CONFIG.SHEET_NAME);
+  const timestamp = new Date().toLocaleString();
+  const spreadsheetId = GOOGLE_SHEETS_CONFIG.SPREADSHEET_ID;
+  const sheetName = GOOGLE_SHEETS_CONFIG.SHEET_NAME;
+  const existingRow = await findExistingRow(spreadsheetId, sheetName, rowData.serialNumber);
+  const statusColMap = { "Received": "E", "Used": "F", "Returned": "G" };
+  const statusCol = statusColMap[lensStatus];
+
+  if (existingRow) {
+    const rowResponse = await window.gapi.client.sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${sheetName}!${statusCol}${existingRow}`,
+    });
+    const existing = rowResponse.result.values?.[0]?.[0];
+    if (existing) {
+      throw new Error(`This lens was already marked as ${lensStatus} on ${existing}`);
+    }
+    await window.gapi.client.sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${sheetName}!${statusCol}${existingRow}`,
+      valueInputOption: "USER_ENTERED",
+      resource: { values: [[timestamp]] },
+    });
+  } else {
+    const receivedTs = lensStatus === "Received" ? timestamp : "";
+    const usedTs = lensStatus === "Used" ? timestamp : "";
+    const returnedTs = lensStatus === "Returned" ? timestamp : "";
+    await window.gapi.client.sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: `${sheetName}!A1`,
+      valueInputOption: "USER_ENTERED",
+      resource: {
+        values: [[rowData.brand, rowData.lensType, rowData.serialNumber, "'" + rowData.power, receivedTs, usedTs, returnedTs]],
+      },
+    });
+  }
 }
 
 // ── Claude Vision parse ───────────────────────────────────────────────────────
@@ -309,12 +306,21 @@ export default function LensScanner() {
       return;
     }
     setStatus("saving");
+    setMessage("Authorizing with Google…");
+    try {
+      await ensureAuthorized();
+    } catch (e) {
+      setStatus("error");
+      setMessage("Authorization failed: " + e.message);
+      return;
+    }
+
     setMessage(`Saving ${validLenses.length} lens(es) to Google Sheets…`);
     const errors = [];
     let savedCount = 0;
     for (const lens of validLenses) {
       try {
-        await authorizeAndAppend(lens, lensStatus);
+        await saveLensRow(lens, lensStatus);
         setHistory((h) => [{ ...lens, lensStatus, time: new Date().toLocaleTimeString() }, ...h.slice(0, 19)]);
         savedCount++;
       } catch (e) {
