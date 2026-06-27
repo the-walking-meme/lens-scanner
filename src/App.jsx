@@ -210,7 +210,11 @@ If there is only one lens, return an array with one object. If a field cannot be
 
   if (!response.ok) {
     const err = await response.json();
-    throw new Error(err.error?.message || "Claude API error");
+    const errType = err.error?.type;
+    if (errType === "not_found_error" || err.error?.message?.includes("model")) {
+      throw new Error("AI model unavailable. Please contact developer. ");
+    }
+    throw new Error("Something went wrong. Please try again or contact your developer.");
   }
 
   const data = await response.json();
